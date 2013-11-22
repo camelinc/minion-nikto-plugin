@@ -11,7 +11,7 @@ from minion.plugins.base import ExternalProcessPlugin
 import references
 
 DEV = True
-DEV = False
+#DEV = False
 
 class NIKTOPlugin(ExternalProcessPlugin):
 
@@ -32,7 +32,7 @@ class NIKTOPlugin(ExternalProcessPlugin):
             if match is not None:
                 name = "OSVDB-%s" % (match.group(1))
                 url = '%s%s' % (self.configuration['target'], match.group(2))
-                logging.debug("line2: %s\t%s" % (name, url))
+                logging.debug("parsing: %s\t%s" % (name, url))
 
                 if name in vulns:
                     vulns[name]['URLs'].append({'URL': url, 'Extra': match.group(3)})
@@ -51,7 +51,7 @@ class NIKTOPlugin(ExternalProcessPlugin):
             if match is not None:
                 name = "Outdated software"
                 extra = '%s appears to be outdated %s' % (match.group(1), match.group(2))
-                logging.debug("line2: %s\t%s" % (name, extra))
+                logging.debug("parsing: %s\t%s" % (name, extra))
 
                 if name in vulns:
                     vulns[name]['Description'] += "<br>%s" % (extra)
@@ -67,7 +67,7 @@ class NIKTOPlugin(ExternalProcessPlugin):
             if match is not None:
                 name = "%s" % (match.group(2))
                 url = '%s%s' % (self.configuration['target'], match.group(1))
-                logging.debug("line2: %s\t%s" % (name, url))
+                logging.debug("parsing: %s\t%s" % (name, url))
 
                 if name in vulns:
                     vulns[name]['URLs'].append({'URL': url})
@@ -79,6 +79,8 @@ class NIKTOPlugin(ExternalProcessPlugin):
                     vulns[name]['FurtherInfo'] = []
 
                 continue
+
+            logging.info("no match: %s" % (line))
 
         for vuln in vulns:
             issues.append(vulns[vuln])
