@@ -2,122 +2,88 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-
+import logging
+import os
 import re
 import urlparse
 from minion.plugins.base import ExternalProcessPlugin
 
+import references
 
-NOTABLE_ISSUES = [
-    {
-        "_ports": [22],
-        "Severity": "Low",
-        "Summary": "Public SSH service found"
-    },
-    {
-        "_ports": [53],
-        "Severity": "Low",
-        "Summary": "Public DNS service found"
-    },
-    {
-        "_ports": [80,443],
-        "Severity": "Informational",
-        "Summary": "Standard HTTP services were found"
-    },
-    {
-        "_ports": [3306],
-        "Ports": [],
-        "Severity": "High",
-        "Summary": "Public MySQL database found",
-        "Description": "A publicly accessible instance of the MySQL database was found on port 3306.",
-        "Solution": "Configure MySQL to listen only on localhost. If other servers need to access to this database then use firewall rules to only allow those servers to connect."
-    },
-    {
-        "_ports": [5432],
-        "Severity": "High",
-        "Summary": "Public PostgreSQL database found",
-        "Description": "A publicly accessible instance of the PostgreSQL database was found on port 5432.",
-        "Solution": "Configure PostgreSQL to listen only on localhost. If other servers need to access this database then use firewall rules to only allow those servers to connect."
-    },
-    {
-        "_ports": [25,113,143,465,587,993,995],
-        "Severity": "Medium",
-        "Summary": "Email service(s) found",
-        "Solution": "It is not recomended to run email services on the same server on which a web site is hosted. It is generally a good idea to separate services to different servers to minimize the attack surface."
-    }
-]
-
-def find_notable_issue(port):
-    for issue in NOTABLE_ISSUES:
-        if port in issue['_ports']:
-            return issue
-
-def parse_nikto_output(output):
-    services = []
-    #FIXME: CSV output
-    for line in output.split("\n"):
-        match = re.match('^(\d+)/(tcp|udp)\s+open\s+(\w+)', line)
-        if match is not None:
-            services.append({'port':int(match.group(1)),'protocol':match.group(2), 'service':match.group(3)})
-    return services
-
-def find_port_in_issues(port, issues):
-    for issue in issues:
-        if port in issue['Ports']:
-            return True
-
-def find_earlier_found_issue(port, issues):
-    for issue in issues:
-        if port in issue['_ports']:
-            return issue
-
-def services_to_issues(services):
-
-    unique_ports = set()
-    for service in services:
-        unique_ports.add(service['port'])
-    
-    high_risk_ports = set()
-
-    issues = []
-
-    for port in unique_ports:
-        # If we have not seen this port before
-        if port not in high_risk_ports and not find_port_in_issues(port, issues):
-            issue = find_earlier_found_issue(port, issues)
-            if issue:
-                issue.setdefault("Ports", []).append(port)                
-            else:
-                issue = find_notable_issue(port)
-                if issue:
-                    # If we have a detailed issue then we use that
-                    issues.append(issue)
-                    issue.setdefault("Ports", []).append(port)
-                else:
-                    # Otherwise all unknown services go to high risk.
-                    high_risk_ports.add(port)
-
-    if len(high_risk_ports) > 0:
-        issues.append({"Ports": list(high_risk_ports), "Severity": "High",
-                       "Summary": "Unknown public services found."})
-        
-    for issue in issues:
-        if '_ports' in issue:
-            del issue['_ports']
-
-    return issues
+DEV = True
+DEV = False
 
 class NIKTOPlugin(ExternalProcessPlugin):
 
     PLUGIN_NAME = "NIKTO"
-    PLUGIN_VERSION = "0.1"
-    PLUGIN_WEIGHT = "light"
+    PLUGIN_VERSION = "0.2"
+    PLUGIN_WEIGHT = "heavy"
 
     NIKTO_NAME = "nikto"
+    ARGS = ""
 
-    def _validate_ports(self, ports):
-        # U:53,111,137,T:21-25,139,8080
-        return re.match(r"(((U|T):)\d+(-\d+)?)(,((U|T):)?\d+(-\d+)?)*", ports)
+    def _parse_output(self, output):
+        issues = []
+        vulns = {}
+        
+        #gather issues
+        for line in output.split("\n"):
+            match = re.match('^\+ OSVDB-(\d+): (.*?): (.*)$', line)
+            if match is not None:
+                name = "OSVDB-%s" % (match.group(1))
+                url = '%s%s' % (self.configuration['target'], match.group(2))
+                logging.debug("line2: %s\t%s" % (name, url))
+
+                if name in vulns:
+                    vulns[name]['URLs'].append({'URL': url, 'Extra': match.group(3)})
+                else:
+                    vulns[name] = {}
+                    vulns[name]['URLs'] = [{'URL': url, 'Extra': match.group(3)}]
+                    vulns[name]['Severity'] = 'Low'
+                    vulns[name]['Summary'] = "%s" % (match.group(3))
+                    vulns[name]['FurtherInfo'] = [{
+                                    'URL': "http://osvdb.org/%s" % (match.group(1)),
+                                    'Title':"OSVDB-%s" % (match.group(1)) }]
+
+                continue
+
+            match = re.match('^\+ (.*?) appears to be outdated (.*)$', line)
+            if match is not None:
+                name = "Outdated software"
+                extra = '%s appears to be outdated %s' % (match.group(1), match.group(2))
+                logging.debug("line2: %s\t%s" % (name, extra))
+
+                if name in vulns:
+                    vulns[name]['Description'] += "<br>%s" % (extra)
+                else:
+                    vulns[name] = {}
+                    vulns[name]['Severity'] = 'Medium'
+                    vulns[name]['Summary'] = "Software appears to be outdated"
+                    vulns[name]['Description'] = "<br>%s" % (extra)
+
+                continue
+
+            match = re.match('^\+ (/.*?): (.*)$', line)
+            if match is not None:
+                name = "%s" % (match.group(2))
+                url = '%s%s' % (self.configuration['target'], match.group(1))
+                logging.debug("line2: %s\t%s" % (name, url))
+
+                if name in vulns:
+                    vulns[name]['URLs'].append({'URL': url})
+                else:
+                    vulns[name] = {}
+                    vulns[name]['URLs'] = [{'URL': url}]
+                    vulns[name]['Severity'] = 'Low'
+                    vulns[name]['Summary'] = "%s" % (match.group(2))
+                    vulns[name]['FurtherInfo'] = []
+
+                continue
+
+        for vuln in vulns:
+            issues.append(vulns[vuln])
+
+        return issues
 
     def do_start(self):
         nikto_path = self.locate_program(self.NIKTO_NAME)
@@ -125,14 +91,26 @@ class NIKTOPlugin(ExternalProcessPlugin):
             raise Exception("Cannot find nikto in path")
         self.nikto_stdout = ""
         self.nikto_stderr = ""
+
+        logdir = "reports"
+        logging.debug(os.getcwd())
+        os.mkdir(logdir)
+
         u = urlparse.urlparse(self.configuration['target'])
-        args = ["-C all"]
-        ports = self.configuration.get('ports')
-        if ports:
-            if not self._validate_ports(ports):
-                raise Exception("Invalid ports specification")
-            args += ["-p", ports]
-        args += [u.hostname]
+        args = []
+        args += ["-C", "all"]
+        args += ["-nointeractive"]
+        #args += ["-Format", "xml"]
+        #args += ["-Format", "csv"]
+        args += ["-Format", "txt"]
+        args += ["-output", "./%s/nikto_%s_80.txt" % (logdir, u.hostname)]   #ERROR: Unable to open '.' for write
+        args += ["-port", "80"]
+        args += ["-config", "/etc/nikto/config.txt"]
+        args += ["-host", u.hostname]
+
+        if DEV:
+            args += ["-H", u.hostname]
+
         self.spawn(nikto_path, args)
 
     def do_process_stdout(self, data):
@@ -150,8 +128,21 @@ class NIKTOPlugin(ExternalProcessPlugin):
             with open("nikto.stderr.txt", "w") as f:
                 f.write(self.nikto_stderr)
             self.report_artifacts("NIKTO Output", ["nikto.stdout.txt", "nikto.stderr.txt"])
-            services = parse_nikto_output(self.nikto_stdout)
-            issues = services_to_issues(services)
+            #services = parse_nikto_output(self.nikto_stdout)
+            #issues = services_to_issues(services)
+            issues = [{'Summary': "TEST",
+                'Description': self.nikto_stdout + self.ARGS,
+                'Severity': "Info",
+                "URLs": [ {"URL": None, "Extra": None} ],
+                "FurtherInfo": None}]
+
+            if DEV:
+                with open('/tmp/94decce9-b6f1-4b33-98a2-19f21c9bc867/nikto.stdout.txt','r') as f:
+                    output = f.readlines()
+                    issues = self._parse_output("".join(output))
+            else:
+                issues = self._parse_output(self.nikto_stdout)
+
             self.report_issues(issues)
             self.report_finish()
         else:

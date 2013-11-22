@@ -9,7 +9,7 @@ install_requires = [
 ]
 
 setup(name="minion-nikto-plugin",
-      version="0.1",
+      version="0.2",
       description="NIKTO Plugin for Minion",
       url="https://github.com/camelinc/minion-nikto-plugin/",
       author="camelinc",
